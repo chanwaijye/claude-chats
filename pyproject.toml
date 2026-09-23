@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-chats"
+version = "0.1.0"
+description = "Console tool to preview Claude Code chats, flag useless ones by size, and delete them safely"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = []
+classifiers = ["Environment :: Console :: Curses", "Operating System :: POSIX"]
+
+[project.urls]
+Homepage = "https://github.com/chanwaijye/claude-chats"
+
+[project.scripts]
+claude-chats = "claude_chats.cli:main"
+cchats = "claude_chats.cli:main"
