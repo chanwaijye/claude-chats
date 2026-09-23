@@ -9,7 +9,6 @@ can be restored; `trash empty` removes it for good.
 from __future__ import annotations
 
 import argparse
-import curses
 import json
 import os
 import shutil
@@ -20,11 +19,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
-TRASH_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "claude-chats" / "trash"
+if os.name == "nt":
+    DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+else:
+    DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+TRASH_DIR = DATA_DIR / "claude-chats" / "trash"
 # Per-session sidecar locations, relative to CLAUDE_DIR.
 SIDECARS = ("file-history/{sid}", "session-env/{sid}", "todos/{sid}*")
 
@@ -191,13 +194,18 @@ def trash_sessions(sessions: list[Session], purge: bool = False) -> int:
     batch = TRASH_DIR / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     for s in sessions:
         for p in s.related_paths():
-            freed += _du(p)
-            if purge:
-                shutil.rmtree(p) if p.is_dir() else p.unlink()
-            else:
-                dest = batch / p.relative_to(CLAUDE_DIR)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(p), dest)
+            size = _du(p)
+            try:
+                if purge:
+                    shutil.rmtree(p) if p.is_dir() else p.unlink()
+                else:
+                    dest = batch / p.relative_to(CLAUDE_DIR)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(p), dest)
+            except OSError as e:  # e.g. file still open by Claude Code on Windows
+                print(f"could not remove {p}: {e.strerror or e}", file=sys.stderr)
+                continue
+            freed += size
     if not purge and sessions:
         (batch / "manifest.json").write_text(
             json.dumps([{"sid": s.sid, "title": s.label, "project": s.project} for s in sessions], indent=2)
@@ -534,8 +542,16 @@ def pager(stdscr, lines: list[str]) -> None:
 
 
 def cmd_tui(args) -> None:
+    # Imported lazily: Windows has no built-in curses (it comes from windows-curses),
+    # and the non-interactive commands should work without it.
+    global curses
     if not sys.stdout.isatty():
         sys.exit("the interactive browser needs a terminal; try `claude-chats list`")
+    try:
+        import curses
+    except ImportError:
+        sys.exit("the interactive browser needs curses; on Windows run `pip install windows-curses`\n"
+                 "(or reinstall with uv/pipx, which adds it automatically)")
     curses.wrapper(tui, args)
 
 
@@ -598,6 +614,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Windows consoles and redirected output may not be UTF-8; never crash on ✗ ▶ ─ etc.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     args = build_parser().parse_args(argv)
     if not getattr(args, "func", None):
         args = build_parser().parse_args(["tui", *(argv or sys.argv[1:])])

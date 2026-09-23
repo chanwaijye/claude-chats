@@ -2,7 +2,9 @@
 
 A console tool to **preview** your Claude Code chat history, **predict which chats are useless** (mostly by size), and **delete** them safely. Deleted chats go to a trash folder so you can restore them.
 
-It uses only the Python standard library and runs on Linux and macOS.
+It runs on **Linux, macOS and Windows** with Python 3.9 or newer. On Linux and macOS it uses only the standard library. On Windows it also installs `windows-curses` for the interactive browser.
+
+[![test](https://github.com/chanwaijye/claude-chats/actions/workflows/test.yml/badge.svg)](https://github.com/chanwaijye/claude-chats/actions/workflows/test.yml)
 
 ```
 [ ]   1 ✗ ec90ef0a  2026-09-13 20:41    267B    0p  (no prompt)
@@ -21,24 +23,52 @@ Claude Code writes each session to `~/.claude/projects/<project>/<session-id>.js
 - `~/.claude/session-env/<session-id>/`
 - `~/.claude/todos/<session-id>*`
 
-When you delete a chat, all of these are removed together. If `CLAUDE_CONFIG_DIR` is set, it is used instead of `~/.claude`.
+When you delete a chat, all of these are removed together. If `CLAUDE_CONFIG_DIR` is set, it is used instead of `~/.claude`. On Windows, `~` means `%USERPROFILE%` (for example `C:\Users\you\.claude`).
 
 ## Install
 
-Any of these works:
+### Step 1: install uv (skip if you already have it)
 
+[uv](https://docs.astral.sh/uv/) is a fast Python package manager. It also installs Python for you if needed.
+
+**Linux / macOS**
 ```sh
-# 1. uv (recommended)
-uv tool install git+https://github.com/chanwaijye/claude-chats
-
-# 2. pipx
-pipx install git+https://github.com/chanwaijye/claude-chats
-
-# 3. single-file script into ~/.local/bin (only needs python3)
-curl -fsSL https://raw.githubusercontent.com/chanwaijye/claude-chats/main/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-All three install two commands: `claude-chats` and the shorter alias `cchats`.
+**Windows** (PowerShell)
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# or: winget install --id=astral-sh.uv -e
+```
+
+Open a new terminal afterwards, then check that it worked with `uv --version`.
+
+### Step 2: install claude-chats
+
+```sh
+uv tool install git+https://github.com/chanwaijye/claude-chats
+```
+
+This works the same on Linux, macOS and Windows. It installs two commands: `claude-chats` and the shorter alias `cchats`. If your terminal then says the command isn't found, run `uv tool update-shell` and open a new terminal.
+
+<details>
+<summary>Other ways to install</summary>
+
+```sh
+# pipx (any OS)
+pipx install git+https://github.com/chanwaijye/claude-chats
+
+# single-file script into ~/.local/bin (Linux/macOS, needs only python3)
+curl -fsSL https://raw.githubusercontent.com/chanwaijye/claude-chats/main/install.sh | sh
+```
+</details>
+
+### Update
+
+```sh
+uv tool upgrade claude-chats
+```
 
 ## Usage
 
@@ -83,19 +113,43 @@ The size of a chat file tracks how much work happened in it. Chats that were ope
 
 ## Safety
 
-- Deleting moves files to `~/.local/share/claude-chats/trash/` by default. Nothing is removed permanently unless you use `--purge` or `trash empty`.
-- Chats changed in the last 10 minutes are skipped, since they may be open in a running session. Use `--force` to delete them anyway.
+- Deleting moves files to the trash by default: `~/.local/share/claude-chats/trash/` on Linux and macOS, `%LOCALAPPDATA%\claude-chats\trash\` on Windows. Nothing is removed permanently unless you use `--purge` or `trash empty`.
+- Chats changed in the last 10 minutes are skipped, since they may be open in a running session. Use `--force` to delete them anyway. On Windows, a file that is still open can't be moved. The tool reports it and skips it.
 - The tool never reads or changes anything outside the chat files listed above.
 
 ## Uninstall
 
+**claude-chats**
+
 ```sh
-uv tool uninstall claude-chats          # if installed with uv
+uv tool uninstall claude-chats          # if installed with uv (any OS)
 pipx uninstall claude-chats             # if installed with pipx
-rm ~/.local/bin/claude-chats ~/.local/bin/cchats   # if installed with install.sh
+./uninstall.sh                          # Linux/macOS: handles every install method
 ```
 
-You can also run `./uninstall.sh`, which handles all three. Add `--purge-trash` to also delete trashed chats. Without it the trash is kept at `~/.local/share/claude-chats/`, so uninstalling never loses a chat you might want back.
+Uninstalling keeps the trash, so you never lose a chat you might want back. To delete the trash too:
+
+```sh
+rm -rf ~/.local/share/claude-chats                        # Linux/macOS (or ./uninstall.sh --purge-trash)
+Remove-Item -Recurse "$env:LOCALAPPDATA\claude-chats"     # Windows PowerShell
+```
+
+**uv itself** (only if you don't use it for anything else)
+
+```sh
+# Linux / macOS
+uv cache clean
+rm -rf "$(uv python dir)" "$(uv tool dir)"
+rm ~/.local/bin/uv ~/.local/bin/uvx
+```
+
+```powershell
+# Windows PowerShell
+uv cache clean
+Remove-Item -Recurse -Force "$(uv python dir)", "$(uv tool dir)"
+Remove-Item "$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.local\bin\uvx.exe"
+# or, if you installed it with winget: winget uninstall astral-sh.uv
+```
 
 ## License
 
