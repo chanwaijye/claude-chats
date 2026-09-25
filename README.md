@@ -78,6 +78,7 @@ cchats list                 # table of all chats (newest first)
 cchats list -s size -u      # only the useless/maybe chats, smallest first
 cchats status               # Claude Code's auto-cleanup setting and what it will delete
 cchats status -v            # ...plus every chat's expiry date
+cchats status --set 365     # keep chats for a year (writes ~/.claude/settings.json)
 cchats show 2ed75dd6        # read a transcript (any unique id prefix works)
 cchats rm 10d6 ec90         # move chats to the trash (asks first)
 cchats clean -n             # dry run: what would be removed as useless
@@ -101,6 +102,7 @@ Flags you can use with `rm` and `clean`: `-n/--dry-run`, `-y/--yes` (don't ask),
 | `d` | move the marked chats (or the current one) to the trash |
 | `f` | show only useless/maybe chats, or show all again |
 | `s` | change the sort: date, size, number of prompts |
+| `c` | change Claude Code's auto-cleanup days |
 | `q` | quit |
 
 ## How it decides a chat is useless
@@ -115,11 +117,7 @@ The size of a chat file tracks how much work happened in it. Chats that were ope
 
 ## Claude Code's own auto-cleanup
 
-Claude Code deletes chats that have been inactive for longer than `cleanupPeriodDays` (default 30) every time it starts. `cchats status` shows the current value, where it comes from (managed settings, then `~/.claude/settings.json`, else the default), the cutoff date, and how many chats are overdue or expire in the next 7 days. The expiry date also appears in `show`, in `list --json` (`expires`), and in the interactive browser's status line. To keep chats longer, set it in `~/.claude/settings.json`:
-
-```json
-{ "cleanupPeriodDays": 365 }
-```
+Claude Code deletes chats that have been inactive for longer than `cleanupPeriodDays` (default 30) every time it starts. `cchats status` shows the current value, where it comes from (managed settings, then `~/.claude/settings.json`, else the default), the cutoff date, and how many chats are overdue or expire in the next 7 days. The expiry date also appears in `show`, in `list --json` (`expires`), and in the interactive browser's status line. To change it, run `cchats status --set DAYS` or press `c` in the interactive browser. This writes `cleanupPeriodDays` to `~/.claude/settings.json` and keeps your other settings. The change takes effect the next time Claude Code starts. If the new value would make existing chats overdue, you're asked to confirm first (`-y` skips the question). If a managed settings file also sets the value, that file wins and you get a warning.
 
 `0` makes Claude Code delete every chat at startup and stop saving new ones.
 
@@ -127,7 +125,7 @@ Claude Code deletes chats that have been inactive for longer than `cleanupPeriod
 
 - Deleting moves files to the trash by default: `~/.local/share/claude-chats/trash/` on Linux and macOS, `%LOCALAPPDATA%\claude-chats\trash\` on Windows. Nothing is removed permanently unless you use `--purge` or `trash empty`.
 - Chats changed in the last 10 minutes are skipped, since they may be open in a running session. Use `--force` to delete them anyway. On Windows, a file that is still open can't be moved. The tool reports it and skips it.
-- The tool never reads or changes anything outside the chat files listed above.
+- The tool never changes anything outside the chat files listed above, except `cleanupPeriodDays` in `~/.claude/settings.json` when you ask it to.
 
 ## Uninstall
 
