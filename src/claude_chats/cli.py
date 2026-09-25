@@ -16,10 +16,10 @@ import sys
 import textwrap
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -30,6 +30,15 @@ else:
 TRASH_DIR = DATA_DIR / "claude-chats" / "trash"
 # Per-session sidecar locations, relative to CLAUDE_DIR.
 SIDECARS = ("file-history/{sid}", "session-env/{sid}", "todos/{sid}*")
+
+# Claude Code deletes sessions inactive longer than `cleanupPeriodDays` at startup.
+DEFAULT_CLEANUP_DAYS = 30
+if sys.platform == "darwin":
+    MANAGED_SETTINGS = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+elif os.name == "nt":
+    MANAGED_SETTINGS = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode/managed-settings.json"
+else:
+    MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 
 ACTIVE_WINDOW_S = 10 * 60  # sessions touched this recently are treated as in use
 
@@ -75,6 +84,41 @@ class Session:
 
     def total_size(self) -> int:
         return sum(_du(p) for p in self.related_paths())
+
+    @property
+    def expires(self) -> float | None:
+        """When Claude Code's startup cleanup will delete this chat (None: never)."""
+        days = cleanup_setting()[0]
+        return None if days is None else self.mtime + days * 86400
+
+
+_cleanup_cache: tuple | None = None
+
+
+def cleanup_setting() -> tuple[int | None, str]:
+    """Return (cleanupPeriodDays, where it came from). Managed settings win over user settings."""
+    global _cleanup_cache
+    if _cleanup_cache is None:
+        _cleanup_cache = (DEFAULT_CLEANUP_DAYS, "Claude Code default")
+        for src in (MANAGED_SETTINGS, CLAUDE_DIR / "settings.json"):
+            try:
+                val = json.loads(src.read_text(encoding="utf-8")).get("cleanupPeriodDays")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
+                if val is not None:
+                    print(f"warning: ignoring invalid cleanupPeriodDays={val!r} in {src}", file=sys.stderr)
+                continue
+            _cleanup_cache = (int(val), str(src))
+            break
+    return _cleanup_cache
+
+
+def cleanup_summary() -> str:
+    days, src = cleanup_setting()
+    if days == 0:
+        return f"auto-clean: 0 days (all chats deleted at Claude Code startup; persistence off)  [{src}]"
+    return f"auto-clean: chats inactive > {days} days are deleted at Claude Code startup  [{src}]"
 
 
 def _du(p: Path) -> int:
@@ -259,6 +303,14 @@ def fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+def fmt_expiry(s: Session) -> str:
+    if s.expires is None:
+        return "never"
+    left = (s.expires - time.time()) / 86400
+    when = fmt_time(s.expires)
+    return f"{when} (overdue, next Claude Code start)" if left <= 0 else f"{when} ({left:.0f}d left)"
+
+
 def transcript(s: Session, width: int = 100, show_tools: bool = True) -> list[str]:
     lines = [
         f"Session : {s.sid}",
@@ -267,6 +319,7 @@ def transcript(s: Session, width: int = 100, show_tools: bool = True) -> list[st
         f"Updated : {fmt_time(s.mtime)}   Size: {human(s.size)}   "
         f"Prompts: {s.prompts}   Replies: {s.replies}   Tool calls: {s.tool_calls}",
         f"Verdict : {s.verdict}" + (f"  ({'; '.join(s.reasons)})" if s.reasons else ""),
+        f"Expires : {fmt_expiry(s)}   ({cleanup_summary().split('  [')[0]})",
         "─" * min(width, 100),
     ]
 
@@ -319,7 +372,8 @@ def cmd_list(args) -> None:
         print(json.dumps([
             {"sid": s.sid, "project": s.project, "title": s.label, "size": s.size,
              "updated": fmt_time(s.mtime), "prompts": s.prompts, "replies": s.replies,
-             "verdict": s.verdict, "reasons": s.reasons}
+             "verdict": s.verdict, "reasons": s.reasons,
+             "expires": fmt_time(s.expires) if s.expires is not None else None}
             for s in sessions], indent=2))
         return
     width = shutil.get_terminal_size().columns
@@ -329,6 +383,35 @@ def cmd_list(args) -> None:
     counts = {v: sum(s.verdict == v for s in sessions) for v in ("useless", "maybe", "keep")}
     print(f"\n{len(sessions)} chats, {human(sum(s.size for s in sessions))}  |  "
           f"✗ useless {counts['useless']}  ? maybe {counts['maybe']}  keep {counts['keep']}")
+    print(cleanup_summary())
+
+
+def cmd_status(args) -> None:
+    days, src = cleanup_setting()
+    sessions = discover(args.project)
+    now = time.time()
+    print(f"Source        : {src}")
+    if days == 0:
+        print("Cleanup days  : 0  (Claude Code deletes all chats at startup and stops saving new ones)")
+    else:
+        print(f"Cleanup days  : {days}" + ("  (default)" if src == "Claude Code default" else ""))
+        cutoff = now - days * 86400
+        print(f"Cutoff        : chats last active before {fmt_time(cutoff)} are removed at next Claude Code start")
+    due = [s for s in sessions if s.expires is not None and s.expires <= now]
+    week = [s for s in sessions if s.expires is not None and now < s.expires <= now + 7 * 86400]
+    print(f"Chats         : {len(sessions)} ({human(sum(x.size for x in sessions))})")
+    print(f"Overdue       : {len(due)} ({human(sum(x.size for x in due))})  — deleted at next Claude Code start")
+    print(f"Next 7 days   : {len(week)} ({human(sum(x.size for x in week))})")
+    upcoming = sorted((s for s in sessions if s.expires is not None), key=lambda s: s.expires)
+    if upcoming and args.verbose:
+        print("\nEXPIRES                         ID        SIZE  TITLE")
+        width = shutil.get_terminal_size().columns
+        for s in upcoming:
+            print(f"{fmt_expiry(s):30}  {s.sid[:8]}  {human(s.size):>6}  {s.label}"[:width])
+    elif upcoming:
+        s = upcoming[0]
+        print(f"Next expiry   : {fmt_expiry(s)}  {s.sid[:8]}  {s.label[:50]}")
+    print("\nChange it with \"cleanupPeriodDays\" in " + str(CLAUDE_DIR / "settings.json"))
 
 
 def cmd_show(args) -> None:
@@ -442,7 +525,8 @@ def tui(stdscr, args) -> None:
         stdscr.erase()
         total = sum(s.size for s in rows)
         header = (f" claude-chats  {len(rows)} chats {human(total)}  sort:{sorts[sort_i]}"
-                  f"  filter:{'useless/maybe' if filt else 'all'}  marked:{len(marked)}")
+                  f"  filter:{'useless/maybe' if filt else 'all'}  marked:{len(marked)}"
+                  f"  auto-clean:{cleanup_setting()[0]}d")
         stdscr.addnstr(0, 0, header.ljust(w), w - 1, curses.A_REVERSE)
         for row, s in enumerate(rows[top:top + body]):
             i = top + row
@@ -453,7 +537,8 @@ def tui(stdscr, args) -> None:
             stdscr.addnstr(row + 1, 0, f"{box} {table_row(i + 1, s, w - 5)}", w - 1, attr)
         if rows:
             s = rows[cur]
-            info = f" {s.project}  |  {s.verdict}: {'; '.join(s.reasons) or 'looks substantive'}"
+            info = (f" {s.project}  |  {s.verdict}: {'; '.join(s.reasons) or 'looks substantive'}"
+                    f"  |  expires {fmt_expiry(s)}")
             stdscr.addnstr(h - 2, 0, info.ljust(w), w - 1, CYAN)
         stdscr.addnstr(h - 1, 0, (msg or HELP)[:w - 1], w - 1, GRN if msg else curses.A_DIM)
         msg = ""
@@ -586,6 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     heuristics(sp)
     sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("status", help="show Claude Code's chat auto-cleanup setting and what it will delete")
+    sp.add_argument("-p", "--project", help="only chats whose project path contains this text")
+    sp.add_argument("-v", "--verbose", action="store_true", help="list every chat with its expiry date")
+    sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("show", aliases=["view"], help="preview a chat transcript")
     sp.add_argument("id", help="session id or unique prefix")

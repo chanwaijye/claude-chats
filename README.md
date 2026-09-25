@@ -76,6 +76,8 @@ uv tool upgrade claude-chats
 cchats                      # interactive browser
 cchats list                 # table of all chats (newest first)
 cchats list -s size -u      # only the useless/maybe chats, smallest first
+cchats status               # Claude Code's auto-cleanup setting and what it will delete
+cchats status -v            # ...plus every chat's expiry date
 cchats show 2ed75dd6        # read a transcript (any unique id prefix works)
 cchats rm 10d6 ec90         # move chats to the trash (asks first)
 cchats clean -n             # dry run: what would be removed as useless
@@ -110,6 +112,16 @@ Flags you can use with `rm` and `clean`: `-n/--dry-run`, `-y/--yes` (don't ask),
 | keep | everything else |
 
 The size of a chat file tracks how much work happened in it. Chats that were opened and then abandoned, cancelled `/resume` pickers, and remote-control stubs are usually just a few KB. Real sessions are usually hundreds of KB or more.
+
+## Claude Code's own auto-cleanup
+
+Claude Code deletes chats that have been inactive for longer than `cleanupPeriodDays` (default 30) every time it starts. `cchats status` shows the current value, where it comes from (managed settings, then `~/.claude/settings.json`, else the default), the cutoff date, and how many chats are overdue or expire in the next 7 days. The expiry date also appears in `show`, in `list --json` (`expires`), and in the interactive browser's status line. To keep chats longer, set it in `~/.claude/settings.json`:
+
+```json
+{ "cleanupPeriodDays": 365 }
+```
+
+`0` makes Claude Code delete every chat at startup and stop saving new ones.
 
 ## Safety
 
