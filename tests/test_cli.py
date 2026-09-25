@@ -91,6 +91,22 @@ class CliTest(unittest.TestCase):
         self.assertFalse(real.exists())
         self.assertFalse(self.trash().exists())
 
+    def test_cleanup_status(self):
+        out = self.run_cli("status")
+        self.assertIn("Cleanup days  : 30  (default)", out)
+        self.assertIn("Overdue       : 0", out)
+        (self.cfg / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 7}))
+        out = self.run_cli("status", "-v")
+        self.assertIn("Cleanup days  : 7", out)
+        self.assertIn("settings.json", out)
+        self.assertIn("6d left", out)
+        rows = json.loads(self.run_cli("list", "--json"))
+        self.assertTrue(all(r["expires"] for r in rows))
+        self.assertIn("auto-clean", self.run_cli("list"))
+        self.assertIn("Expires :", self.run_cli("show", "bbbb", "--no-pager"))
+        (self.cfg / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 0}))
+        self.assertIn("stops saving", self.run_cli("status"))
+
     def test_unknown_id_fails(self):
         self.run_cli("show", "zzzz", ok=False)
 
