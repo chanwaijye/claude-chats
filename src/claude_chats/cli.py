@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -112,6 +112,33 @@ def cleanup_setting() -> tuple[int | None, str]:
             _cleanup_cache = (int(val), str(src))
             break
     return _cleanup_cache
+
+
+def set_cleanup_days(days: int) -> str:
+    """Write cleanupPeriodDays to the user settings.json, keeping every other key."""
+    global _cleanup_cache
+    if days < 0:
+        raise ValueError("days must be 0 or more")
+    path = CLAUDE_DIR / "settings.json"
+    settings = {}
+    if path.exists():
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise ValueError(f"{path} is not valid JSON ({e}); fix it by hand first") from e
+        if not isinstance(settings, dict):
+            raise ValueError(f"{path} does not hold a JSON object; fix it by hand first")
+    old = settings.get("cleanupPeriodDays")
+    settings["cleanupPeriodDays"] = days
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".claude-chats.tmp")
+    tmp.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)  # atomic: Claude Code never sees a half-written file
+    _cleanup_cache = None
+    msg = f"cleanupPeriodDays: {old if old is not None else 'unset'} -> {days}  ({path})"
+    if cleanup_setting()[1] != str(path):
+        msg += f"\nwarning: {cleanup_setting()[1]} overrides this; effective value is {cleanup_setting()[0]}"
+    return msg
 
 
 def cleanup_summary() -> str:
@@ -387,6 +414,9 @@ def cmd_list(args) -> None:
 
 
 def cmd_status(args) -> None:
+    if args.set is not None:
+        _set_days(args)
+        return
     days, src = cleanup_setting()
     sessions = discover(args.project)
     now = time.time()
@@ -411,7 +441,32 @@ def cmd_status(args) -> None:
     elif upcoming:
         s = upcoming[0]
         print(f"Next expiry   : {fmt_expiry(s)}  {s.sid[:8]}  {s.label[:50]}")
-    print("\nChange it with \"cleanupPeriodDays\" in " + str(CLAUDE_DIR / "settings.json"))
+    print("\nChange it with: claude-chats status --set DAYS")
+
+
+def _set_days(args) -> None:
+    days = args.set
+    if days < 0:
+        sys.exit("days must be 0 or more")
+    now = time.time()
+    doomed = [] if days == 0 else [s for s in discover() if s.mtime + days * 86400 <= now]
+    if days == 0:
+        warn = "0 makes Claude Code delete ALL chats at its next start and stop saving new ones."
+    elif doomed:
+        warn = (f"{len(doomed)} chat(s) ({human(sum(s.size for s in doomed))}) are older than {days} days "
+                "and will be deleted at the next Claude Code start.")
+    else:
+        warn = ""
+    if warn:
+        print(warn)
+        if not args.yes and not confirm(f"set cleanupPeriodDays to {days}?"):
+            print("aborted")
+            return
+    try:
+        print(set_cleanup_days(days))
+    except (ValueError, OSError) as e:
+        sys.exit(str(e))
+    print("takes effect the next time Claude Code starts")
 
 
 def cmd_show(args) -> None:
@@ -496,7 +551,7 @@ def cmd_trash(args) -> None:
 # --------------------------------------------------------------------------- TUI
 
 HELP = ("↑↓/jk move  PgUp/PgDn  Enter preview  Space mark  a mark useless  "
-        "d delete marked  f filter  s sort  q quit")
+        "d delete marked  f filter  s sort  c cleanup days  q quit")
 
 
 def tui(stdscr, args) -> None:
@@ -561,6 +616,8 @@ def tui(stdscr, args) -> None:
             cur = len(rows) - 1
         elif k == ord("s"):
             sort_i = (sort_i + 1) % len(sorts)
+        elif k == ord("c"):
+            msg = edit_cleanup_days(stdscr, h, w, RED, all_sessions)
         elif k == ord("f"):
             filt, cur = not filt, 0
         elif k == ord(" ") and rows:
@@ -588,6 +645,35 @@ def tui(stdscr, args) -> None:
                 msg = f"moved {len(targets)} chat(s) to trash — restore with: claude-chats trash restore <id>"
             else:
                 msg = "cancelled"
+
+
+def edit_cleanup_days(stdscr, h: int, w: int, warn_attr, sessions: list[Session]) -> str:
+    prompt = f" Auto-clean days (now {cleanup_setting()[0]}, blank cancels): "
+    stdscr.addnstr(h - 1, 0, prompt.ljust(w), w - 1, curses.A_REVERSE)
+    curses.echo()
+    curses.curs_set(1)
+    try:
+        raw = stdscr.getstr(h - 1, min(len(prompt), w - 8), 6).decode(errors="replace").strip()
+    finally:
+        curses.noecho()
+        curses.curs_set(0)
+    if not raw:
+        return "cancelled"
+    if not raw.isdigit():
+        return f"not a number: {raw}"
+    days = int(raw)
+    now = time.time()
+    doomed = sessions if days == 0 else [s for s in sessions if s.mtime + days * 86400 <= now]
+    if doomed:
+        q = (" 0 deletes ALL chats at next Claude Code start! Sure? y/N " if days == 0 else
+             f" {len(doomed)} chat(s) will be deleted at next Claude Code start. Set {days}? y/N ")
+        stdscr.addnstr(h - 1, 0, q.ljust(w), w - 1, warn_attr | curses.A_REVERSE)
+        if stdscr.getch() not in (ord("y"), ord("Y")):
+            return "cancelled"
+    try:
+        return set_cleanup_days(days).replace("\n", "  ")
+    except (ValueError, OSError) as e:
+        return f"error: {e}"
 
 
 def pager(stdscr, lines: list[str]) -> None:
@@ -675,6 +761,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("status", help="show Claude Code's chat auto-cleanup setting and what it will delete")
     sp.add_argument("-p", "--project", help="only chats whose project path contains this text")
     sp.add_argument("-v", "--verbose", action="store_true", help="list every chat with its expiry date")
+    sp.add_argument("--set", type=int, metavar="DAYS",
+                    help="write cleanupPeriodDays to ~/.claude/settings.json (0 = delete everything!)")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("show", aliases=["view"], help="preview a chat transcript")

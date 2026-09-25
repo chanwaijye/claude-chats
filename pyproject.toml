@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-chats"
-version = "0.3.0"
+version = "0.4.0"
 description = "Console tool to preview Claude Code chats, flag useless ones by size, and delete them safely"
 readme = "README.md"
 license = "MIT"

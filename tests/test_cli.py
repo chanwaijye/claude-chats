@@ -107,6 +107,25 @@ class CliTest(unittest.TestCase):
         (self.cfg / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 0}))
         self.assertIn("stops saving", self.run_cli("status"))
 
+    def test_set_cleanup_days(self):
+        settings = self.cfg / "settings.json"
+        settings.write_text(json.dumps({"model": "opus", "cleanupPeriodDays": 30}))
+        self.assertIn("30 -> 365", self.run_cli("status", "--set", "365"))
+        self.assertEqual(json.loads(settings.read_text()), {"model": "opus", "cleanupPeriodDays": 365})
+        self.assertIn("Cleanup days  : 365", self.run_cli("status"))
+
+        # lowering below the chats' age, or 0, needs confirmation
+        self.assertIn("aborted", self.run_cli("status", "--set", "1"))
+        self.assertIn("aborted", self.run_cli("status", "--set", "0"))
+        self.assertEqual(json.loads(settings.read_text())["cleanupPeriodDays"], 365)
+        self.run_cli("status", "--set", "0", "-y")
+        self.assertEqual(json.loads(settings.read_text())["cleanupPeriodDays"], 0)
+
+        self.run_cli("status", "--set", "-5", ok=False)
+        settings.write_text("{broken")
+        self.run_cli("status", "--set", "10", ok=False)
+        self.assertEqual(settings.read_text(), "{broken")
+
     def test_unknown_id_fails(self):
         self.run_cli("show", "zzzz", ok=False)
 
